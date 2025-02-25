@@ -1,14 +1,18 @@
 import open3d as o3d
 import numpy as np
 import requests
+import csv
+import copy
+
 # Configuration
 POINT_CLOUD_FILE = "target_pcl/1.ply"  
 SHAPE_FILE = "shape/shape2.obj"
-WALLS_FILE = "walls/walls.obj"
+WALLS_FILE = "walls/walls1.obj"
 SERVER_URL = "http://127.0.0.1:5000"  
 NUM_REQUESTS = 1  
 RADIUS = 3000
 POINT_SIZE = 50
+FOV = 100
 
 
 def load_point_cloud(file_path):
@@ -154,48 +158,48 @@ def ray_intersects_mesh(ray_origin, ray_end, walls_mesh):
     # Check if intersection occurs before ray_end point
     return t_hit < ray_length
 
-def extract_hemisphere_around_point(pcd, random_point, view_vector, radius, walls_mesh):
+def extract_pcd_around_point(pcd, random_point, view_vector, radius, walls_mesh, fov_degrees):
     """
-    Extracts a point cloud within a hemisphere, taking occlusion into account.
+    Extracts a point cloud within a specified field of view (FOV) and radius, considering occlusion.
     """
     if np.linalg.norm(view_vector) == 0:
         raise ValueError("View vector cannot be zero.")
 
     view_vector = view_vector / np.linalg.norm(view_vector)
-    
+
     points = np.asarray(pcd.points)
     distances = np.linalg.norm(points - random_point, axis=1)
 
-    # Filter points within sphere (distance <= radius)
+    # Filter points within the sphere (distance <= radius)
     sphere_mask = distances <= radius
     print("Points within sphere:", np.sum(sphere_mask))
 
-    # Compute directions from random_point to each point
+    # Compute directions from the random_point to each point
     point_directions = points - random_point
     norms = np.linalg.norm(point_directions, axis=1, keepdims=True)
-    valid_norms = norms > 0 
+    valid_norms = norms > 0  # Avoid division by zero
     unit_directions = np.where(valid_norms, point_directions / norms, 0)
 
-    # Dot product between normalized direction vectors and view_vector
+
     dot_products = np.sum(unit_directions * view_vector, axis=1)
+    fov_threshold = np.cos(np.radians(fov_degrees / 2))  # cos(60°) = 0.5
 
-    # Keep points that are in hemisphere (dot product ≥ 0)
-    hemisphere_mask = dot_products >= 0
-    print("Points in hemisphere:", np.sum(hemisphere_mask))
+    # Keep points within FOV
+    fov_mask = dot_products >= fov_threshold
+    print(f"Points in {fov_degrees}° FOV:", np.sum(fov_mask))
 
-    # Combine masks to get points within hemisphere
-    final_mask = sphere_mask & hemisphere_mask
+    # Combine masks to get points within FOV and radius
+    final_mask = sphere_mask & fov_mask
     extracted_points = points[final_mask]
     print("Final extracted points:", len(extracted_points))
 
     # Handle occlusion: check if point is visible from random_point
     visible_points = []
     for point in extracted_points:
-        # Ray from random_point to current point
         ray_origin = random_point
         ray_end = point
-        
-        # Check if ray intersects walls mesh before reaching point
+
+        # Check if ray intersects the walls mesh before reaching the point
         if not ray_intersects_mesh(ray_origin, ray_end, walls_mesh):
             visible_points.append(point)
 
@@ -207,7 +211,7 @@ def extract_hemisphere_around_point(pcd, random_point, view_vector, radius, wall
 
     return extracted_pcd
 
-def visualize_extracted_hemisphere(pcd, extracted_pcd, random_point, view_vector_visualizer, walls_mesh):
+def visualize_extracted_pcd(pcd, extracted_pcd, random_point, view_vector_visualizer, walls_mesh):
     """Visualizes the extracted hemisphere with occlusion handling."""
     
     # Create sphere to represent random_point
@@ -218,16 +222,85 @@ def visualize_extracted_hemisphere(pcd, extracted_pcd, random_point, view_vector
     # Visualize
     o3d.visualization.draw_geometries([ extracted_pcd, sphere, view_vector_visualizer, walls_mesh])
 
+import numpy as np
+import open3d as o3d
+
+def apply_random_transformation(extracted_pcd):
+    # Compute the centroid and center point cloud
+    points = np.asarray(extracted_pcd.points)
+    centroid = np.mean(points, axis=0)
     
-def send_to_server(points, filename):
+    # Create copy and center it
+    sensor_local_pcd = copy.deepcopy(extracted_pcd)
+    sensor_local_pcd.translate(-centroid)
+    
+    # Generate realistic sensor pose with random yaw rotation
+    yaw = np.random.uniform(0, 2 * np.pi)
+    cos_yaw = np.cos(yaw)
+    sin_yaw = np.sin(yaw)
+    R_yaw = np.array([[ cos_yaw, 0, sin_yaw],
+                      [      0, 1,      0],
+                      [-sin_yaw, 0, cos_yaw]])
+    
+    # Create copy and apply yaw rotation
+    sensor_rotated_pcd = copy.deepcopy(sensor_local_pcd)
+    sensor_rotated_pcd.rotate(R_yaw, center=(0, 0, 0))
+    
+    # Visualize point cloud after applying yaw rotation
+    sensor_local_pcd.paint_uniform_color([0, 1, 0]) 
+    sensor_rotated_pcd.paint_uniform_color([1, 0, 0]) 
+    o3d.visualization.draw_geometries([pcd, sensor_local_pcd, sensor_rotated_pcd])
+    
+    sensor_translation = centroid 
+    
+    # Construct transformation matrix that maps from the sensor's local frame to global coordinate system
+    T_sensor = np.eye(4)
+    T_sensor[:3, :3] = R_yaw
+    T_sensor[:3, 3] = sensor_translation
+    
+    # Apply the full transformation (yaw + translation) to simulate global pose
+    sensor_global_pcd = copy.deepcopy(sensor_local_pcd)
+    sensor_global_pcd.transform(T_sensor)
+    
+    print(T_sensor)
+    
+    return sensor_local_pcd, T_sensor
+
+
+
+def send_to_server(extracted_pcd, algorithm):
     """Sends the extracted point cloud data to the server."""
-    data = {"filename": filename, "points": points.tolist()}
-    response = requests.post(SERVER_URL, json=data)
-    return response.status_code
+    points = np.asarray(extracted_pcd.points).tolist() 
+    
+    payload = {"sourcepoints": points, "targetmodel": 1, "algorithm": algorithm}  
+
+    # Send POST request
+    response = requests.post(SERVER_URL, json=payload)
+
+    # Handle response
+    if response.status_code == 201:
+        transformation_matrix = response.json().get("transformation_matrix")
+        return transformation_matrix
+    else:
+        print(f"Error: Server responded with {response.status_code}")
+        return None  
+
+def write_transformation_to_csv(transformation_matrix, filename):
+    """Write the transformation matrix to a CSV file."""
+    with open(filename, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        
+        # If the file is empty, write the header
+        if file.tell() == 0:
+            writer.writerow(["Algorithm", "Transformation Matrix"])
+        
+        # Write the transformation matrix along with the algorithm ID
+        writer.writerow([1, transformation_matrix])  # Change 1 to the actual algorithm ID if needed
+
 
 def simulate_requests(num_requests, pcd, shape_mesh, walls_mesh):
     """Runs the simulation, selecting a random point and sending it to the server."""
-    visualize_shape_and_point_cloud(pcd, shape_mesh)
+    # visualize_shape_and_point_cloud(pcd, shape_mesh)
     
     # Get a random point on the shape mesh
     random_point, sphere = get_random_point_on_shape(shape_mesh)
@@ -236,13 +309,24 @@ def simulate_requests(num_requests, pcd, shape_mesh, walls_mesh):
     view_vector = get_random_viewing_vector()
 
     # Draw view vector as a line
-    view_vector_visualizer = visualize_view_vector(random_point, view_vector, sphere, pcd)
+    # view_vector_visualizer = visualize_view_vector(random_point, view_vector, sphere, pcd)
 
     # Extract hemisphere around random point
-    extracted_pcd = extract_hemisphere_around_point(pcd, random_point, view_vector, RADIUS, walls_mesh)
+    extracted_pcd = extract_pcd_around_point(pcd, random_point, view_vector, RADIUS, walls_mesh, FOV)
     
-    visualize_extracted_hemisphere(pcd, extracted_pcd, random_point, view_vector_visualizer, walls_mesh)
-
+    # visualize_extracted_pcd(pcd, extracted_pcd, random_point, view_vector_visualizer, walls_mesh)
+    
+    # Apply random transformation
+    transformed_extracted_pcd, transformation = apply_random_transformation(extracted_pcd)
+    
+    # Send extracted point cloud to server
+    for algorithm in range(0, 3):  # 1, 2, 3
+        status_code = send_to_server(transformed_extracted_pcd, algorithm)
+        print(f"Server response for algorithm {algorithm}: {status_code}")
+        
+        # Evaluate rotation and translation error
+        
+        # Write transformation matrix to CSV
 
 
 pcd = load_point_cloud(POINT_CLOUD_FILE)
