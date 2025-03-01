@@ -3,6 +3,8 @@ import numpy as np
 import requests
 import csv
 import copy
+import os
+import json
 
 # Configuration
 POINT_CLOUD_FILE = "target_pcl/1.ply"  
@@ -13,6 +15,7 @@ NUM_REQUESTS = 1
 RADIUS = 3000
 POINT_SIZE = 50
 FOV = 100
+CSV_FILE = "results.csv"
 
 
 def load_point_cloud(file_path):
@@ -260,7 +263,7 @@ def apply_random_transformation(extracted_pcd):
     extracted_pcd.paint_uniform_color([0, 0, 1])          
     extracted_pcd_transformed.paint_uniform_color([1, 0, 0]) 
 
-    # o3d.visualization.draw_geometries([pcd, extracted_pcd, extracted_pcd_transformed, bbox])
+    o3d.visualization.draw_geometries([pcd, extracted_pcd, extracted_pcd_transformed, bbox])
     
     return extracted_pcd_transformed, T_sensor
 
@@ -304,23 +307,12 @@ def send_to_server(extracted_pcd, algorithm):
     # Handle response
     if response.status_code == 201:
         transformation_matrix = response.json().get("transformation_matrix")
-        return transformation_matrix
+        elapsed_time = response.json().get("elapsed_time")
+        return transformation_matrix, elapsed_time
     else:
         print(f"Error: Server responded with {response.status_code}")
-        return None  
-
-def write_transformation_to_csv(transformation_matrix, filename):
-    """Write the transformation matrix to a CSV file."""
-    with open(filename, mode='a', newline='') as file:
-        writer = csv.writer(file)
-        
-        # If the file is empty, write the header
-        if file.tell() == 0:
-            writer.writerow(["Algorithm", "Transformation Matrix"])
-        
-        # Write the transformation matrix along with the algorithm ID
-        writer.writerow([1, transformation_matrix])  # Change 1 to the actual algorithm ID if needed
-
+        return None
+    
 def checkMatrixVisually(extracted_pcd, server_transformation):
         # o3d.visualization.draw_geometries([pcd, extracted_pcd])
         
@@ -330,46 +322,73 @@ def checkMatrixVisually(extracted_pcd, server_transformation):
         
         o3d.visualization.draw_geometries([pcd, server_transformed_pcd])
 
+
+def write_transformation_to_csv(simulation_count, transformation, server_transformation, rot_error, trans_error, elapsed_time, csv_file):
+    """Write the transformation matrix to a CSV file."""
+    # Flatten transformation matrices to strings.
+    transformation_str = ";".join([",".join(f"{num:.6f}" for num in row) for row in transformation.tolist()])
+    server_transformation_str = ";".join([",".join(f"{num:.6f}" for num in row) for row in server_transformation.tolist()])
+
+    # Create the row.
+    row = [
+        simulation_count,
+        transformation_str,
+        server_transformation_str,
+        rot_error,
+        trans_error,
+        elapsed_time
+    ]
+
+    # If the file does not exist, write a header first.
+    write_header = not os.path.exists(csv_file)
+    with open(csv_file, "a", newline="") as f:
+        writer = csv.writer(f)
+        if write_header:
+            header = ["simulation_count", "transformation", "server_transformation", "rotation_error", "translation_error", "elapsed_time"]
+            writer.writerow(header)
+        writer.writerow(row)
+
 def simulate_requests(num_requests, pcd, shape_mesh, walls_mesh):
     """Runs the simulation, selecting a random point and sending it to the server."""
-    # visualize_shape_and_point_cloud(pcd, shape_mesh)
+    simulation_count = 0
+    while simulation_count < num_requests:
+        # visualize_shape_and_point_cloud(pcd, shape_mesh)
     
-    # Get a random point on the shape mesh
-    random_point, sphere = get_random_point_on_shape(shape_mesh)
-    
-    # Get random view vector
-    view_vector = get_random_viewing_vector()
+        # Get a random point on the shape mesh
+        random_point, sphere = get_random_point_on_shape(shape_mesh)
+        
+        # Get random view vector
+        view_vector = get_random_viewing_vector()
 
-    # Draw view vector as a line
-    # view_vector_visualizer = visualize_view_vector(random_point, view_vector, sphere, pcd)
+        # Draw view vector as a line
+        # view_vector_visualizer = visualize_view_vector(random_point, view_vector, sphere, pcd)
 
-    # Extract hemisphere around random point
-    extracted_pcd = extract_pcd_around_point(pcd, random_point, view_vector, RADIUS, walls_mesh, FOV)
-    
-    # visualize_extracted_pcd(pcd, extracted_pcd, random_point, view_vector_visualizer, walls_mesh)
-    
-    # Apply random transformation
-    transformed_extracted_pcd, transformation = apply_random_transformation(extracted_pcd)
-    
-    
-    print("Transformation matrix T_sensor:")
-    print(transformation)
-    
-    # Send extracted point cloud to server
-    for algorithm in range(0, 3):  # 1, 2, 3
-        status_code = send_to_server(transformed_extracted_pcd, 0)
-        print(f"Server response for algorithm {0}: {status_code}")
-    
-        server_transformation = np.array(status_code)
-    
-        checkMatrixVisually(transformed_extracted_pcd, server_transformation)
-    
-        rot_error, trans_error = compute_transformation_error(transformation, server_transformation)
-    
-        print("Rotation error (degrees):", rot_error)
-        print("Translation error:", trans_error)
-    
-    # Write transformation matrix to CSV
+        # Extract hemisphere around random point
+        extracted_pcd = extract_pcd_around_point(pcd, random_point, view_vector, RADIUS, walls_mesh, FOV)
+        
+        # visualize_extracted_pcd(pcd, extracted_pcd, random_point, view_vector_visualizer, walls_mesh)
+        
+        # Apply random transformation
+        transformed_extracted_pcd, transformation = apply_random_transformation(extracted_pcd)
+        
+        # Send extracted point cloud to server
+        for algorithm in range(0, 3):  # 1, 2, 3
+            transformation_matrix, elapsed_time = send_to_server(transformed_extracted_pcd, algorithm)
+            print(f"Server response for algorithm {algorithm}: {transformation_matrix}")
+            
+            # Check the transformation matrix visually
+            server_transformation = np.array(transformation_matrix)
+            checkMatrixVisually(transformed_extracted_pcd, server_transformation)
+        
+            rot_error, trans_error = compute_transformation_error(transformation, server_transformation)
+        
+            print("Rotation error (degrees):", rot_error)
+            print("Translation error:", trans_error)
+        
+            # Write to CSV
+            write_transformation_to_csv(simulation_count, transformation, server_transformation, rot_error, trans_error, elapsed_time, CSV_FILE)
+        
+        simulation_count += 1
 
 
 pcd = load_point_cloud(POINT_CLOUD_FILE)
