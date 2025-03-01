@@ -222,51 +222,75 @@ def visualize_extracted_pcd(pcd, extracted_pcd, random_point, view_vector_visual
     # Visualize
     o3d.visualization.draw_geometries([ extracted_pcd, sphere, view_vector_visualizer, walls_mesh])
 
-import numpy as np
-import open3d as o3d
-
 def apply_random_transformation(extracted_pcd):
-    # Compute the centroid and center point cloud
+    # Compute the centroid of the extracted point cloud.
     points = np.asarray(extracted_pcd.points)
-    centroid = np.mean(points, axis=0)
+    centroid_extracted = np.mean(points, axis=0)
     
-    # Create copy and center it
-    sensor_local_pcd = copy.deepcopy(extracted_pcd)
-    sensor_local_pcd.translate(-centroid)
-    
-    # Generate realistic sensor pose with random yaw rotation
+    # Generate a random yaw rotation (about the Y-axis).
     yaw = np.random.uniform(0, 2 * np.pi)
     cos_yaw = np.cos(yaw)
     sin_yaw = np.sin(yaw)
-    R_yaw = np.array([[ cos_yaw, 0, sin_yaw],
-                      [      0, 1,      0],
-                      [-sin_yaw, 0, cos_yaw]])
+    R_yaw = np.array([[cos_yaw, 0, sin_yaw],
+                      [0,       1, 0],
+                      [-sin_yaw,0, cos_yaw]])
     
-    # Create copy and apply yaw rotation
-    sensor_rotated_pcd = copy.deepcopy(sensor_local_pcd)
-    sensor_rotated_pcd.rotate(R_yaw, center=(0, 0, 0))
+    # Compute the axis-aligned bounding box of the global point cloud (pcd)
+    bbox = pcd.get_axis_aligned_bounding_box()
+    bbox.color = (0, 0, 1) 
     
-    # Visualize point cloud after applying yaw rotation
-    sensor_local_pcd.paint_uniform_color([0, 1, 0]) 
-    sensor_rotated_pcd.paint_uniform_color([1, 0, 0]) 
-    o3d.visualization.draw_geometries([pcd, sensor_local_pcd, sensor_rotated_pcd])
+    # Choose a random translation point within the bounding box of pcd.
+    min_bound = bbox.get_min_bound()  # [min_x, min_y, min_z]
+    max_bound = bbox.get_max_bound()  # [max_x, max_y, max_z]
+    random_translation = np.random.uniform(low=min_bound, high=max_bound)
     
-    sensor_translation = centroid 
+    # Calculate the translation vector so that the transformed centroid equals the random point.
+    translation = random_translation - R_yaw.dot(centroid_extracted)
     
-    # Construct transformation matrix that maps from the sensor's local frame to global coordinate system
+    # Construct the transformation matrix T_sensor.
     T_sensor = np.eye(4)
     T_sensor[:3, :3] = R_yaw
-    T_sensor[:3, 3] = sensor_translation
+    T_sensor[:3, 3] = translation
     
-    # Apply the full transformation (yaw + translation) to simulate global pose
-    sensor_global_pcd = copy.deepcopy(sensor_local_pcd)
-    sensor_global_pcd.transform(T_sensor)
-    
-    print(T_sensor)
-    
-    return sensor_local_pcd, T_sensor
+    # Apply the transformation to the extracted point cloud.
+    extracted_pcd_transformed = copy.deepcopy(extracted_pcd)
+    extracted_pcd_transformed.transform(T_sensor)
 
+    pcd.paint_uniform_color([0, 1, 0])                    
+    extracted_pcd.paint_uniform_color([0, 0, 1])          
+    extracted_pcd_transformed.paint_uniform_color([1, 0, 0]) 
 
+    # o3d.visualization.draw_geometries([pcd, extracted_pcd, extracted_pcd_transformed, bbox])
+    
+    return extracted_pcd_transformed, T_sensor
+
+def compute_transformation_error(T_sensor, server_transformation):
+    
+    T_sensor_inv = np.linalg.inv(T_sensor)
+    
+    print(T_sensor_inv)
+
+    # Convert server response to a numpy array if it isn't already
+    T_est = np.array(server_transformation)
+    
+    # Extract the rotation matrices (top-left 3x3) and translation vectors (first 3 elements of the last column)
+    R_sensor = T_sensor_inv[:3, :3]
+    R_est    = T_est[:3, :3]
+    t_sensor = T_sensor_inv[:3, 3]
+    t_est    = T_est[:3, 3]
+    
+    # Compute the relative rotation matrix (difference between rotations)
+    R_rel = R_est @ R_sensor.T
+    
+    # Compute the rotation error using the formula:
+    # angle_error = arccos((trace(R_rel) - 1) / 2)
+    angle_error_rad = np.arccos(np.clip((np.trace(R_rel) - 1) / 2, -1.0, 1.0))
+    rot_error_deg = np.degrees(angle_error_rad)
+    
+    # Compute the translation error as the Euclidean norm of the difference between translation vectors.
+    trans_error = np.linalg.norm(t_sensor - t_est)
+    
+    return rot_error_deg, trans_error
 
 def send_to_server(extracted_pcd, algorithm):
     """Sends the extracted point cloud data to the server."""
@@ -297,6 +321,14 @@ def write_transformation_to_csv(transformation_matrix, filename):
         # Write the transformation matrix along with the algorithm ID
         writer.writerow([1, transformation_matrix])  # Change 1 to the actual algorithm ID if needed
 
+def checkMatrixVisually(extracted_pcd, server_transformation):
+        # o3d.visualization.draw_geometries([pcd, extracted_pcd])
+        
+        server_transformed_pcd = copy.deepcopy(extracted_pcd)
+        server_transformation = np.array(server_transformation)
+        server_transformed_pcd.transform(server_transformation)
+        
+        o3d.visualization.draw_geometries([pcd, server_transformed_pcd])
 
 def simulate_requests(num_requests, pcd, shape_mesh, walls_mesh):
     """Runs the simulation, selecting a random point and sending it to the server."""
@@ -319,14 +351,25 @@ def simulate_requests(num_requests, pcd, shape_mesh, walls_mesh):
     # Apply random transformation
     transformed_extracted_pcd, transformation = apply_random_transformation(extracted_pcd)
     
+    
+    print("Transformation matrix T_sensor:")
+    print(transformation)
+    
     # Send extracted point cloud to server
     for algorithm in range(0, 3):  # 1, 2, 3
-        status_code = send_to_server(transformed_extracted_pcd, algorithm)
-        print(f"Server response for algorithm {algorithm}: {status_code}")
-        
-        # Evaluate rotation and translation error
-        
-        # Write transformation matrix to CSV
+        status_code = send_to_server(transformed_extracted_pcd, 0)
+        print(f"Server response for algorithm {0}: {status_code}")
+    
+        server_transformation = np.array(status_code)
+    
+        checkMatrixVisually(transformed_extracted_pcd, server_transformation)
+    
+        rot_error, trans_error = compute_transformation_error(transformation, server_transformation)
+    
+        print("Rotation error (degrees):", rot_error)
+        print("Translation error:", trans_error)
+    
+    # Write transformation matrix to CSV
 
 
 pcd = load_point_cloud(POINT_CLOUD_FILE)
