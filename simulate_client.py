@@ -321,7 +321,24 @@ def checkMatrixVisually(extracted_pcd, server_transformation):
         server_transformed_pcd.transform(server_transformation)
         
         o3d.visualization.draw_geometries([pcd, server_transformed_pcd])
-
+        
+        return server_transformed_pcd
+    
+def savePCLS(simulation_count, algorithm, result_pcd, extracted_pcd):
+         # Create the output folder if it doesn't exist
+        if not os.path.exists(str(simulation_count)):
+            os.makedirs(str(simulation_count))
+        
+        # Save the transformed point cloud to output folder
+        filename = f"simulation_{simulation_count}_algorithm_{algorithm}_result_pcd.ply"
+        output_path = os.path.join(str(simulation_count), filename)
+        o3d.io.write_point_cloud(output_path, result_pcd)
+        
+        if algorithm == 0:
+            filename = f"simulation_{simulation_count}_algorithm_{algorithm}_initial_pcd.ply"
+            output_path = os.path.join(str(simulation_count), filename)
+            o3d.io.write_point_cloud(output_path, extracted_pcd)
+        
 
 def write_transformation_to_csv(simulation_count, transformation, server_transformation, rot_error, trans_error, elapsed_time, csv_file):
     """Write the transformation matrix to a CSV file."""
@@ -378,7 +395,8 @@ def simulate_requests(num_requests, pcd, shape_mesh, walls_mesh):
             
             # Check the transformation matrix visually
             server_transformation = np.array(transformation_matrix)
-            checkMatrixVisually(transformed_extracted_pcd, server_transformation)
+            result_pcd = checkMatrixVisually(transformed_extracted_pcd, server_transformation)
+            savePCLS(simulation_count, algorithm, result_pcd, extracted_pcd)
         
             rot_error, trans_error = compute_transformation_error(transformation, server_transformation)
         
