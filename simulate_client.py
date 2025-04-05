@@ -7,9 +7,9 @@ import os
 import json
 
 # Configuration
-POINT_CLOUD_FILE = "target_pcl/1.ply"  
-SHAPE_FILE = "shape/shape2.obj"
-WALLS_FILE = "walls/walls1.obj"
+POINT_CLOUD_FILE = "target_pcl/office-full.ply"  
+SHAPE_FILE = "plane/office-plane-gap.obj"
+WALLS_FILE = "walls/office-walls.obj"
 SERVER_URL = "http://127.0.0.1:5000"  
 NUM_REQUESTS = 1  
 RADIUS = 3000
@@ -35,14 +35,6 @@ def load_mesh(file_path):
     mesh.rotate(R, center=(0, 0, 0))
    
     return mesh
-
-def visualize_shape_and_point_cloud(pcd, shape_mesh):
-    """Visualizes the full point cloud and the shape mesh."""
-
-    shape_mesh.paint_uniform_color([1, 0, 0])  # Shape -> red
-    pcd.paint_uniform_color([0, 1, 0])  # PCL -> green
-
-    o3d.visualization.draw_geometries([pcd, shape_mesh])
 
 def get_random_point_on_shape(shape_mesh):
     """Samples a random point from the surface of the shape mesh and returns it as an integer point."""
@@ -88,11 +80,11 @@ def get_random_point_on_shape(shape_mesh):
     
     return random_point_rounded, sphere
 
-def visualize_shape_and_point_cloud(pcd, shape_mesh):
+def visualize_shape_and_point_cloud(pcd, shape_mesh, walls_mesh):
     """Visualizes the full point cloud and the shape mesh."""
     shape_mesh.paint_uniform_color([1, 0, 0])  # Shape -> red
     pcd.paint_uniform_color([0, 1, 0])  # PCL -> green
-    o3d.visualization.draw_geometries([pcd, shape_mesh])
+    o3d.visualization.draw_geometries([pcd, shape_mesh, walls_mesh])
 
 def get_random_viewing_vector():
     """Generates a normalized random viewing vector in 3D space."""
@@ -339,7 +331,6 @@ def savePCLS(simulation_count, algorithm, result_pcd, extracted_pcd):
             output_path = os.path.join(str(simulation_count), filename)
             o3d.io.write_point_cloud(output_path, extracted_pcd)
         
-
 def write_transformation_to_csv(simulation_count, transformation, server_transformation, rot_error, trans_error, elapsed_time, csv_file):
     """Write the transformation matrix to a CSV file."""
     # Flatten transformation matrices to strings.
@@ -369,7 +360,7 @@ def simulate_requests(num_requests, pcd, shape_mesh, walls_mesh):
     """Runs the simulation, selecting a random point and sending it to the server."""
     simulation_count = 0
     while simulation_count < num_requests:
-        # visualize_shape_and_point_cloud(pcd, shape_mesh)
+        visualize_shape_and_point_cloud(pcd, shape_mesh, walls_mesh)
     
         # Get a random point on the shape mesh
         random_point, sphere = get_random_point_on_shape(shape_mesh)
@@ -378,33 +369,33 @@ def simulate_requests(num_requests, pcd, shape_mesh, walls_mesh):
         view_vector = get_random_viewing_vector()
 
         # Draw view vector as a line
-        # view_vector_visualizer = visualize_view_vector(random_point, view_vector, sphere, pcd)
+        view_vector_visualizer = visualize_view_vector(random_point, view_vector, sphere, pcd)
 
         # Extract hemisphere around random point
         extracted_pcd = extract_pcd_around_point(pcd, random_point, view_vector, RADIUS, walls_mesh, FOV)
         
-        # visualize_extracted_pcd(pcd, extracted_pcd, random_point, view_vector_visualizer, walls_mesh)
+        visualize_extracted_pcd(pcd, extracted_pcd, random_point, view_vector_visualizer, walls_mesh)
         
         # Apply random transformation
         transformed_extracted_pcd, transformation = apply_random_transformation(extracted_pcd)
         
         # Send extracted point cloud to server
-        for algorithm in range(0, 3):  # 1, 2, 3
-            transformation_matrix, elapsed_time = send_to_server(transformed_extracted_pcd, algorithm)
-            print(f"Server response for algorithm {algorithm}: {transformation_matrix}")
+        # for algorithm in range(0, 3):  # 1, 2, 3
+        #     transformation_matrix, elapsed_time = send_to_server(transformed_extracted_pcd, algorithm)
+        #     print(f"Server response for algorithm {algorithm}: {transformation_matrix}")
             
-            # Check the transformation matrix visually
-            server_transformation = np.array(transformation_matrix)
-            result_pcd = checkMatrixVisually(transformed_extracted_pcd, server_transformation)
-            savePCLS(simulation_count, algorithm, result_pcd, extracted_pcd)
+        #     # Check the transformation matrix visually
+        #     server_transformation = np.array(transformation_matrix)
+        #     result_pcd = checkMatrixVisually(transformed_extracted_pcd, server_transformation)
+        #     savePCLS(simulation_count, algorithm, result_pcd, extracted_pcd)
         
-            rot_error, trans_error = compute_transformation_error(transformation, server_transformation)
+        #     rot_error, trans_error = compute_transformation_error(transformation, server_transformation)
         
-            print("Rotation error (degrees):", rot_error)
-            print("Translation error:", trans_error)
+        #     print("Rotation error (degrees):", rot_error)
+        #     print("Translation error:", trans_error)
         
-            # Write to CSV
-            write_transformation_to_csv(simulation_count, transformation, server_transformation, rot_error, trans_error, elapsed_time, CSV_FILE)
+        #     # Write to CSV
+        #     write_transformation_to_csv(simulation_count, transformation, server_transformation, rot_error, trans_error, elapsed_time, CSV_FILE)
         
         simulation_count += 1
 
